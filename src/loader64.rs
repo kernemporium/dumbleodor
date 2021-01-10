@@ -44,8 +44,11 @@ fn gen_base_address() -> u64 {
 
 /* Is pie based or not */
 pub(crate) fn is_rel(header: &xmas_elf::header::Header, fbuf: &Vec<u8>) -> Result<bool> {
-    if parse_program_header(fbuf, *header, 0).unwrap().virtual_addr() == 0x0 {
-        return Ok(true);
+    for i in 0..header.pt2.ph_count() {
+        if parse_program_header(fbuf, *header, i).unwrap().virtual_addr() == 0x0
+            && parse_program_header(fbuf, *header, i).unwrap().get_type().unwrap() == Type::Load {
+            return Ok(true);
+        }
     }
 
     Ok(false)
@@ -347,17 +350,22 @@ pub(crate) fn manual_map(
     is_interp: bool
 ) -> Result<(u64, Option<u64>)> {
     let mut program_header: ProgramHeader;
+    let mut base_address: *const u8 = 0x0 as *const u8;
+
     let is_rel: bool = is_rel(&header, &fbuf)?;
-    let mut has_interp: bool = false;
-    let mut base_address: *const u8 = parse_program_header(&fbuf, header.clone(), 0)
-                                        .unwrap()
-                                        .virtual_addr() as *const u8;
-    let mut base_interp: u64 = 0x0;
-    let mut ep: u64 = header.pt2.entry_point();
 
     if is_rel {
         base_address = gen_base_address() as *const u8;
+    } else {
+        base_address = parse_program_header(&fbuf, header.clone(), 0)
+            .unwrap()
+            .virtual_addr() as *const u8;
     }
+
+    let mut has_interp: bool = false;
+
+    let mut base_interp: u64 = 0x0;
+    let mut ep: u64 = header.pt2.entry_point();
 
     for i in 0..header.pt2.ph_count() {
         program_header = parse_program_header(&fbuf, header.clone(), i).unwrap();

@@ -1,0 +1,6 @@
+cargo:rerun-if-changed=build.rs
+cargo:rustc-cfg=has_fused_iterator
+cargo:rustc-cfg=has_must_use
+cargo:rustc-cfg=has_maybe_uninit
+cargo:rustc-cfg=has_alloc
+cargo:rustc-cfg=has_non_exhaustive
