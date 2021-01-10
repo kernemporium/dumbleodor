@@ -2,7 +2,6 @@ use std::{ffi::CString,
           fs::{copy, OpenOptions, File},
           io::Read,
           os::unix::prelude::*,
-          ptr,
           str};
 
 use libc::{
@@ -45,27 +44,20 @@ fn gen_base_address() -> u64 {
 
 /* Is pie based or not */
 pub(crate) fn is_rel(header: &xmas_elf::header::Header, fbuf: &Vec<u8>) -> Result<bool> {
-    for i in 0..header.pt2.ph_count() {
-       if parse_program_header(fbuf, *header, i as u16).unwrap().get_type().unwrap() == Type::Dynamic {
-           return Ok(true);
-       }
+    if parse_program_header(fbuf, *header, 0).unwrap().virtual_addr() == 0x0 {
+        return Ok(true);
     }
 
     Ok(false)
 }
 
-/// @interp: str of the interp to mmap
-/// @if_debug: enable debug output or not
 fn map_interp(interp: &str, if_debug: bool) -> Result<(u64, u64)> {
     let target: &str = "interp";
-    let base_addr: u64;
-    let ep: u64;
 
     /* copy locally the interp*/
     copy_wrapper(interp, target).unwrap();
 
     let (fbuf, fd) = open_wrapper(&interp)?;
-
     let header: xmas_elf::header::Header = xmas_elf::header::parse_header(&fbuf[..]).unwrap();
 
     let mut auxv: Auxvt = Auxvt::new_null();
@@ -103,14 +95,13 @@ fn map_ptload(
     ph: &ProgramHeader,
     isrel: bool,
     to_mmap: *const u8,
-    is: bool,
     aux: &Auxvt,
     if_debug: bool,
 ) -> Result<*mut u8> {
     let mmap_chunk: *mut c_void;
 
     let mut prot = 0x0;
-    let mut flags = MAP_FILE | MAP_PRIVATE;
+    let flags = MAP_FILE | MAP_PRIVATE | MAP_FIXED;
 
     let vaddr = ph.virtual_addr();
     let _sz = round_page!(page_offset!(vaddr) + ph.mem_size()) as size_t;
@@ -118,21 +109,14 @@ fn map_ptload(
     let file_sz = ph.file_size() as size_t;
     let memsz = ph.mem_size() as size_t;
 
-    let seg_start = page_begin!(vaddr) as u64;
-    let seg_end_main = (vaddr + file_sz as u64) as u64;
-
     let mut base_address = 0x0;
 
-    if !is && isrel {
-        flags |= MAP_FIXED;
+    if isrel {
         base_address = to_mmap as u64;
-    } else if isrel && is {
-        base_address = gen_base_address() as u64;
-    } else if !isrel && is {
-        base_address = page_begin!(vaddr) as u64;
-    } else if !isrel {
-        base_address = page_begin!(to_mmap as u64) as u64;
     }
+
+    let seg_start = page_begin!(base_address + vaddr) as u64;
+    let seg_end_main = round_page!(base_address + vaddr + file_sz as u64) as u64;
 
     if ph.flags().is_read() {
         prot |= PROT_READ;
@@ -146,29 +130,16 @@ fn map_ptload(
         prot |= PROT_EXEC;
     }
 
-    if isrel {
-        mmap_chunk = unsafe {
-            mmap(
-                (page_begin!(base_address as u64 + seg_start) as u64) as *mut c_void,
-                round_page!(seg_end_main - seg_start) as usize,
-                prot | PROT_WRITE,
-                flags,
-                aux.fd as i32,
-                offt,
-            )
-        };
-    } else {
-        mmap_chunk = unsafe {
-            mmap(
-                page_begin!(seg_start) as *mut c_void,
-                round_page!(seg_end_main - seg_start) as usize,
-                prot | PROT_WRITE,
-                flags,
-                aux.fd as i32,
-                offt,
-            )
-        };
-    }
+    mmap_chunk = unsafe {
+        mmap(
+            (page_begin!(seg_start) as u64) as *mut c_void,
+            round_page!(seg_end_main - seg_start) as usize,
+            prot | PROT_WRITE,
+            flags,
+            aux.fd as i32,
+            offt,
+        )
+    };
 
     if memsz > file_sz {
         /*
@@ -176,35 +147,19 @@ fn map_ptload(
         let map_memsz = round_page!(page_offset!(vaddr as u64) + memsz as u64);
         */
 
-        let bss_start = vaddr + file_sz as u64;
+        let bss_start = base_address + vaddr + file_sz as u64;
         let map_bss_start = round_page!(bss_start) as u64 + 1;
-        let _map_addr_bss;
+        let _map_addr_bss = map_bss_start;
 
-        let seg_end = round_page!(memsz as u64 + vaddr) as u64;
+        let seg_end = round_page!(base_address + memsz as u64 + vaddr) as u64;
 
-        if isrel {
-            _map_addr_bss = base_address as u64 + map_bss_start;
-        } else {
-            _map_addr_bss = map_bss_start;
-        }
-
-        if isrel {
-            unsafe {
-                memset(
-                    (base_address as u64 + bss_start) as *mut c_void,
-                    0x0,
-                    ((map_bss_start) - bss_start) as usize,
-                )
-            };
-        } else {
-            unsafe {
-                memset(
-                    (bss_start) as *mut c_void,
-                    0x0,
-                    ((map_bss_start) - bss_start) as usize,
-                )
-            };
-        }
+        unsafe {
+            memset(
+                (bss_start) as *mut c_void,
+                0x0,
+                ((map_bss_start) - bss_start) as usize,
+            )
+        };
 
         if seg_end > map_bss_start {
             unsafe {
@@ -220,31 +175,16 @@ fn map_ptload(
                     panic!("...");
                 }
             };
-            if isrel {
-                debug!(
-                    format!(
-                        "{}{:x} - {:x} {:x}",
-                        "[+] ",
-                        page_begin!(base_address as u64 + seg_start) as u64,
-                        page_begin!(base_address as u64 + seg_start) as u64
-                            + round_page!((seg_end_main - seg_start) as u64) as u64,
-                        round_page!(seg_end_main - seg_start)
-                    ),
-                    if_debug
-                );
-            } else {
-                debug!(
-                    format!(
-                        "{}{:x} - {:x} {:x}",
-                        "[+] ",
-                        page_begin!(seg_start) as u64,
-                        ((seg_start) as u64) + round_page!((seg_end_main - seg_start)) as u64,
-                        round_page!(seg_end_main - seg_start)
-                    ),
-                    if_debug
-                );
-            }
-
+            debug!(
+                format!(
+                    "{}{:x} - {:x} {:x}",
+                    "[+] ",
+                    page_begin!(seg_start) as u64,
+                    ((seg_start) as u64) + round_page!((seg_end_main - seg_start)) as u64,
+                    round_page!(seg_end_main - seg_start)
+                ),
+                if_debug
+            );
             debug!(
                 format!(
                     "{}{:x} - {:x} {:x}",
@@ -260,32 +200,16 @@ fn map_ptload(
         }
     }
 
-    if isrel {
-        debug!(
-            format!(
-                "{}{:x} - {:x} {:x}",
-                "[+] ",
-                page_begin!(base_address as u64 + seg_start) as u64,
-                round_page!(
-                    (page_begin!(base_address as u64 + seg_start) as u64)
-                        + (seg_end_main - seg_start)
-                ),
-                round_page!(seg_end_main - seg_start)
-            ),
-            if_debug
-        );
-    } else {
-        debug!(
-            format!(
-                "{}{:x} - {:x} {:x}",
-                "[+] ",
-                page_begin!(seg_start) as u64,
-                round_page!((page_begin!(seg_start) as u64) + (seg_end_main - seg_start)),
-                round_page!(seg_end_main - seg_start)
-            ),
-            if_debug
-        );
-    }
+    debug!(
+        format!(
+            "{}{:x} - {:x} {:x}",
+            "[+] ",
+            page_begin!(seg_start) as u64,
+            round_page!((page_begin!(seg_start) as u64) + (seg_end_main - seg_start)),
+            round_page!(seg_end_main - seg_start)
+        ),
+        if_debug
+    );
 
     Ok(mmap_chunk as *mut u8)
 }
@@ -413,88 +337,6 @@ pub(crate) fn pop_stack(aux: &Auxvt, args: &Vec<CString>, n: u64) -> Result<u64>
 /// * `aux`: auxilary vector struct
 /// * `is_debug`: enable or not debug output
 ///
-/// manual_map maps all the PT_LOAD segments of the interpreter the same way as manual_map
-fn manual_map_interp(
-    header: &xmas_elf::header::Header,
-    fbuf: &Vec<u8>,
-    aux: &mut Auxvt,
-    if_debug: bool,
-) -> Result<(u64, u64)> {
-    let mut program_header: ProgramHeader;
-    let is_rel = is_rel(&header, &fbuf).unwrap();
-    let mut is = true;
-    let mut base_address = ptr::null();
-
-    let ep = header.pt2.entry_point();
-
-    for i in 0..header.pt2.ph_count() {
-        program_header = parse_program_header(&fbuf, header.clone(), i).unwrap();
-
-        if program_header.get_type().unwrap() == Type::Load {
-            if is_rel {
-                if is {
-                    base_address = map_ptload(
-                        &program_header,
-                        is_rel,
-                        base_address as *const u8,
-                        is,
-                        aux,
-                        if_debug,
-                    )
-                    .unwrap();
-                    is = false;
-                } else {
-                    map_ptload(
-                        &program_header,
-                        is_rel,
-                        base_address as *const u8,
-                        is,
-                        aux,
-                        if_debug,
-                    )?;
-                }
-            } else {
-                map_ptload(
-                    &program_header,
-                    is_rel,
-                    parse_program_header(&fbuf, header.clone(), 0)
-                        .unwrap()
-                        .virtual_addr() as *const u8,
-                    is,
-                    aux,
-                    if_debug,
-                )
-                .unwrap();
-                is = false;
-            }
-        }
-    }
-
-    if is_rel {
-        aux.base_phdr = header.pt2.ph_offset() + base_address as u64;
-    } else {
-        aux.base_phdr = header.pt2.ph_offset()
-            + parse_program_header(&fbuf, header.clone(), 0)
-                .unwrap()
-                .virtual_addr();
-    }
-
-    aux.sz_phdr_entry = header.pt2.ph_entry_size() as u64;
-    aux.n = header.pt2.ph_count() as u64;
-
-    debug!("[+] All the PT_LOAD are mapped !", if_debug);
-
-
-    /* returns a tuple ep (quite often an offset) and the base address */
-    Ok((ep, base_address as u64))
-}
-
-/// # Arguments
-/// * `header`: ref to the header of the target binary
-/// * `fbuf`: the target binary mapped
-/// * `aux`: auxilary vector struct
-/// * `is_debug`: enable or not debug output
-///
 /// manual_map maps all the PT_LOAD segments of a binary and checks if
 /// there is an interpreter, if it is, it calls map_interp
 pub(crate) fn manual_map(
@@ -506,57 +348,29 @@ pub(crate) fn manual_map(
 ) -> Result<(u64, Option<u64>)> {
     let mut program_header: ProgramHeader;
     let is_rel: bool = is_rel(&header, &fbuf)?;
-    let mut is = true;
     let mut has_interp: bool = false;
-    let mut base_address: *const u8 = ptr::null();
+    let mut base_address: *const u8 = parse_program_header(&fbuf, header.clone(), 0)
+                                        .unwrap()
+                                        .virtual_addr() as *const u8;
     let mut base_interp: u64 = 0x0;
     let mut ep: u64 = header.pt2.entry_point();
 
+    if is_rel {
+        base_address = gen_base_address() as *const u8;
+    }
+
     for i in 0..header.pt2.ph_count() {
-        program_header = match parse_program_header(&fbuf, header.clone(), i) {
-            Ok(ph) => ph,
-            Err(e) => panic!("{}", e),
-        };
+        program_header = parse_program_header(&fbuf, header.clone(), i).unwrap();
 
         match program_header.get_type().unwrap() {
             Type::Load => {
-                if is_rel {
-                    if is {
-                        /* If it the first PT_LOAD to map, we setup teh base address */
-                        base_address = map_ptload(
-                            &program_header,
-                            is_rel,
-                            base_address as *const u8,
-                            is,
-                            aux,
-                            if_debug,
-                        )?;
-                        is = false;
-                    } else {
-                        map_ptload(
-                            &program_header,
-                            is_rel,
-                            base_address as *const u8,
-                            is,
-                            aux,
-                            if_debug,
-                        )?;
-                    }
-                } else {
-                    /* If it's not a pie based binary the virtual addresses of each segment are valid for mapping */
-                    map_ptload(
-                        &program_header,
-                        is_rel,
-                        parse_program_header(&fbuf, header.clone(), 0)
-                            .unwrap()
-                            .virtual_addr() as *const u8,
-                        is,
-                        aux,
-                        if_debug,
-                    )
-                    .unwrap();
-                    is = false;
-                }
+                map_ptload(
+                    &program_header,
+                    is_rel,
+                    base_address as *const u8,
+                    aux,
+                    if_debug,
+                )?;
             },
 
             Type::Interp => {
@@ -601,15 +415,7 @@ pub(crate) fn manual_map(
         aux.base_interp = base_interp;
     }
 
-    if is_rel {
-        aux.base_phdr = header.pt2.ph_offset() + base_address as u64;
-    } else {
-        aux.base_phdr = header.pt2.ph_offset()
-            + parse_program_header(&fbuf, header.clone(), 0)
-                .unwrap()
-                .virtual_addr();
-    }
-
+    aux.base_phdr = header.pt2.ph_offset() + base_address as u64;
     /* Set certain auxilary vectors */
     aux.sz_phdr_entry = header.pt2.ph_entry_size() as u64;
     aux.n = header.pt2.ph_count() as u64;
@@ -636,8 +442,10 @@ pub(crate) fn manual_map(
         );
 
         Ok((base_interp as u64 + ep, None))
+    } else if is_rel {
+        /* or directly the vaddr of the entry point (pie based binary) */
+        Ok((base_address as u64 + header.pt2.entry_point(), None))
     } else {
-        /* or directly the vaddr of the entry point */
         Ok((header.pt2.entry_point(), None))
     }
 }

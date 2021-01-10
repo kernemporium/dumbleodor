@@ -35,8 +35,7 @@ impl Auxvt {
     }
 }
 
-///
-/// const values for auxilary vectors
+// const values for auxilary vectors
 pub const AT_PHDR: u64 = 3;
 pub const AT_PHENT: u64 = 4;
 pub const AT_ENTRY: u64 = 9;

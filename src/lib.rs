@@ -4,7 +4,7 @@ use std::ffi::CString;
 
 pub mod error;
 pub mod x64;
-pub mod loader;
+pub mod loader64;
 mod utils;
 
 pub trait Binary {

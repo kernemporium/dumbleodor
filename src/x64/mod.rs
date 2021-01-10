@@ -5,7 +5,7 @@ use std::os::unix::io::AsRawFd;
 
 use crate::Binary;
 use crate::error;
-use crate::loader;
+use crate::loader64;
 use auxvt::*;
 
 use crate::{debug};
@@ -50,12 +50,12 @@ impl Binary for Binary64 {
             if_debug
         );
 
-        match loader::copy_wrapper(&vec_stackb[1].to_str().unwrap(), target) {
+        match loader64::copy_wrapper(&vec_stackb[1].to_str().unwrap(), target) {
             Ok(_) => (),
             Err(_) => panic!("[-] Fatal copy"),
         };
 
-        let tuple = loader::open_wrapper(&target)?;
+        let tuple = loader64::open_wrapper(&target)?;
 
         fbuf = tuple.0;
         fd_w = tuple.1;
@@ -70,7 +70,7 @@ impl Binary for Binary64 {
         auxv.fd = fd_w.as_raw_fd() as u64;
         auxv.target_name = vec_stackb[1].as_ptr() as u64;
 
-        if loader::is_rel(&header, &fbuf)? == true {
+        if loader64::is_rel(&header, &fbuf)? == true {
             debug!(
                 format!(
                     "{}{:}",
@@ -81,11 +81,11 @@ impl Binary for Binary64 {
             );
         }
 
-        self.ep = loader::manual_map(&header, &fbuf, &mut auxv, if_debug, false)?.0;
+        self.ep = loader64::manual_map(&header, &fbuf, &mut auxv, if_debug, false)?.0;
 
         debug!(format!("{}{:x}", "=> Entry point: ", self.ep), if_debug);
 
-        self.stack = loader::pop_stack(&auxv, &vec_stackb, argc)?;
+        self.stack = loader64::pop_stack(&auxv, &vec_stackb, argc)?;
 
         self.run()?;
 
