@@ -145,11 +145,6 @@ fn map_ptload(
     };
 
     if memsz > file_sz {
-        /*
-        let map_fsz = round_page!(page_offset!(vaddr as u64) + file_sz as u64);
-        let map_memsz = round_page!(page_offset!(vaddr as u64) + memsz as u64);
-        */
-
         let bss_start = base_address + vaddr + file_sz as u64;
         let map_bss_start = round_page!(bss_start) as u64 + 1;
         let _map_addr_bss = map_bss_start;
