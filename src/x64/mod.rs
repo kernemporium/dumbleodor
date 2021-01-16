@@ -50,20 +50,14 @@ impl Binary for Binary64 {
             if_debug
         );
 
-        match loader64::copy_wrapper(&vec_stackb[1].to_str().unwrap(), target) {
-            Ok(_) => (),
-            Err(_) => panic!("[-] Fatal copy"),
-        };
+        loader64::copy_wrapper(&vec_stackb[1].to_str().unwrap(), target).unwrap();
 
         let tuple = loader64::open_wrapper(&target)?;
 
         fbuf = tuple.0;
         fd_w = tuple.1;
 
-        let header: xmas_elf::header::Header = match xmas_elf::header::parse_header(&fbuf[..]) {
-            Ok(header) => header,
-            Err(error) => panic!("{}", error),
-        };
+        let header: xmas_elf::header::Header = xmas_elf::header::parse_header(&fbuf[..]).unwrap();
 
         let mut auxv = Auxvt::new_null();
 
@@ -115,6 +109,8 @@ impl Binary for Binary64 {
                        in(reg) self.stack
             );
         };
+
+        // never reached
 
         Ok(())
     }

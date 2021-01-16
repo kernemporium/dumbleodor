@@ -10,6 +10,11 @@ use libc::{
 };
 use rand::{thread_rng, Rng};
 use xmas_elf::program::{parse_program_header, ProgramHeader, Type};
+/*use wallee::{serializer::Serializable,
+             elf::{
+                 Elf64Ehdr, Elf64Phdr, Elf32Ehdr, Elf32Phdr, PT_LOAD
+             }
+};*/
 
 use crate::error::Result;
 use crate::x64::auxvt::{
@@ -45,8 +50,8 @@ fn gen_base_address() -> u64 {
 /* Is pie based or not */
 pub(crate) fn is_rel(header: &xmas_elf::header::Header, fbuf: &Vec<u8>) -> Result<bool> {
     for i in 0..header.pt2.ph_count() {
-        if parse_program_header(fbuf, *header, i).unwrap().virtual_addr() == 0x0
-            && parse_program_header(fbuf, *header, i).unwrap().get_type().unwrap() == Type::Load {
+        if parse_program_header(fbuf, *header, i).unwrap().virtual_addr() == 0x0 &&
+            parse_program_header(fbuf, *header, i).unwrap().get_type().unwrap() == Type::Load {
             return Ok(true);
         }
     }
@@ -93,7 +98,6 @@ fn map_interp(interp: &str, if_debug: bool) -> Result<(u64, u64)> {
 /// =-=-=-=-=-=--
 /// 
 /// map_ptload maps a PT_LOAD segment
-/// TODO: patch the crash when it's loading a no-pie binary dynamically linked
 fn map_ptload(
     ph: &ProgramHeader,
     isrel: bool,
@@ -107,7 +111,7 @@ fn map_ptload(
     let flags = MAP_FILE | MAP_PRIVATE | MAP_FIXED;
 
     let vaddr = ph.virtual_addr();
-    let _sz = round_page!(page_offset!(vaddr) + ph.mem_size()) as size_t;
+    //let _sz = round_page!(page_offset!(vaddr) + ph.mem_size()) as size_t;
     let offt = page_begin!(ph.offset()) as i64;
     let file_sz = ph.file_size() as size_t;
     let memsz = ph.mem_size() as size_t;
@@ -135,9 +139,9 @@ fn map_ptload(
 
     mmap_chunk = unsafe {
         mmap(
-            (page_begin!(seg_start) as u64) as *mut c_void,
+            (seg_start) as *mut c_void,
             round_page!(seg_end_main - seg_start) as usize,
-            prot | PROT_WRITE,
+            prot,
             flags,
             aux.fd as i32,
             offt,
@@ -146,8 +150,8 @@ fn map_ptload(
 
     if memsz > file_sz {
         let bss_start = base_address + vaddr + file_sz as u64;
-        let map_bss_start = round_page!(bss_start) as u64 + 1;
-        let _map_addr_bss = map_bss_start;
+        let map_bss_start = round_page!(bss_start) as u64;
+        let _map_addr_bss = map_bss_start + 1;
 
         let seg_end = round_page!(base_address + memsz as u64 + vaddr) as u64;
 
@@ -159,19 +163,16 @@ fn map_ptload(
             )
         };
 
-        if seg_end > map_bss_start {
+        if seg_end > map_bss_start { // 0x1534251000
             unsafe {
-                let test = mmap(
+                mmap(
                     (_map_addr_bss) as *mut c_void,
                     round_page!(seg_end - map_bss_start) as usize,
-                    prot | PROT_WRITE,
+                    prot,
                     MAP_ANONYMOUS | MAP_FIXED | MAP_PRIVATE,
                     -1,
                     0x0,
                 );
-                if test == MAP_FAILED {
-                    panic!("...");
-                }
             };
             debug!(
                 format!(
@@ -352,9 +353,15 @@ pub(crate) fn manual_map(
     if is_rel {
         base_address = gen_base_address() as *const u8;
     } else {
-        base_address = parse_program_header(&fbuf, header.clone(), 0)
-            .unwrap()
-            .virtual_addr() as *const u8;
+            for i in 0..header.pt2.ph_count() {
+                if parse_program_header(&fbuf, header.clone(), i)
+                    .unwrap()
+                    .get_type().unwrap() == Type::Load {
+                        base_address = parse_program_header(&fbuf, header.clone(), i)
+                            .unwrap().virtual_addr() as *const u8;
+                        break;
+                }
+        }
     }
 
     let mut has_interp: bool = false;
@@ -388,8 +395,7 @@ pub(crate) fn manual_map(
                 }
 
                 /* cast vec to str */
-                let array_interp: &[u8] = interp.as_slice();
-                let str_interp = str::from_utf8(array_interp).unwrap();
+                let str_interp = str::from_utf8(interp.as_slice()).unwrap();
 
                 debug!(format!("{}{}", "[+] interp found: ", str_interp), if_debug);
 
@@ -423,23 +429,35 @@ pub(crate) fn manual_map(
     aux.sz_phdr_entry = header.pt2.ph_entry_size() as u64;
     aux.n = header.pt2.ph_count() as u64;
     /* ep in the binary */
-    aux.ep = header.pt2.entry_point() + base_address as u64;
+    if !is_rel {
+        aux.ep = header.pt2.entry_point();
+    } else {
+        aux.ep = header.pt2.entry_point() + base_address as u64;
+    }
 
     debug!("[+] All the PT_LOAD are mapped !", if_debug);
 
     if is_interp {
        Ok((ep, Some(base_address as u64)))
-    } else if has_interp {
+    } else if has_interp && is_rel {
         /* we return the entry point in the interpreter */
         debug!(
             format!(
                 "{}{:x}",
                 "[+] ep in the target: ",
-                parse_program_header(&fbuf, header.clone(), 0)
-                    .unwrap()
-                    .virtual_addr()
-                    + base_address as u64
-                    + ep
+                    header.pt2.entry_point() + base_address as u64
+            ),
+            if_debug
+        );
+
+        Ok((base_interp as u64 + ep, None))
+    } else if has_interp && !is_rel {
+        /* we return the entry point in the interpreter */
+        debug!(
+            format!(
+                "{}{:x}",
+                "[+] ep in the target: ",
+                    header.pt2.entry_point()
             ),
             if_debug
         );
