@@ -3,11 +3,7 @@ Library to load executable files
 
 # Examples
 ```rust
-#![feature(asm)]
 #![feature(start)]
-#![feature(type_ascription)]
-#![feature(llvm_asm)]
-#![feature(const_fn_fn_ptr_basics)]
 
 use std::ffi::CString;
 use dumbleodor::*;
