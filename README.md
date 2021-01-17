@@ -24,7 +24,7 @@ In the Cargo.toml you have to include the dumbleodor's path:
 # ...
 
 [dependencies]
-dumbleodor = {path="../dumbleodor"}
+dumbleodor = {path="/ur/path/of/dumbleodor"}
 
 # ...
 
