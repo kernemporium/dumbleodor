@@ -163,6 +163,17 @@ fn map_ptload(
             )
         };
 
+        debug!(
+            format!(
+                "{}{:x} - {:x} {:x}",
+                "[+] ",
+                bss_start as u64,
+                map_bss_start as u64,
+                ((map_bss_start) - bss_start) as usize
+            ),
+            if_debug
+        );
+
         if seg_end > map_bss_start { // 0x1534251000
             unsafe {
                 mmap(
