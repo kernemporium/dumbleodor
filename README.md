@@ -1,5 +1,5 @@
 # dumbleodor
-Library to load executable files
+Manual mapper for Linux written in pure Rust. 
 
 # Example
 ```rust
